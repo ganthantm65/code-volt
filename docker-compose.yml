@@ -1,0 +1,65 @@
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: code_shock_postgres
+    restart: always
+    environment:
+      POSTGRES_DB: code_shock
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: adminpassword
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - code_shock_net
+
+  redis:
+    image: redis:7-alpine
+    container_name: code_shock_redis
+    restart: always
+    ports:
+      - "6379:6379"
+    networks:
+      - code_shock_net
+
+  judge_runner:
+    build: ./runner
+    container_name: code_shock_judge
+    restart: always
+    deploy:
+      resources:
+        limits:
+          cpus: '1.5'
+          memory: 512M
+    networks:
+      - code_shock_net
+    expose:
+      - "8000"
+
+  api:
+    build: ./backend
+    container_name: code_shock_api
+    restart: always
+    environment:
+      PORT: 5000
+      DATABASE_URL: postgres://admin:adminpassword@postgres:5432/code_shock
+      REDIS_URL: redis://redis:6379
+      RUNNER_URL: http://judge_runner:8000/run
+      JWT_SECRET: super_secure_code_shock_jwt_key_2026
+    ports:
+      - "5000:5000"
+    depends_on:
+      - postgres
+      - redis
+      - judge_runner
+    networks:
+      - code_shock_net
+
+volumes:
+  pgdata:
+
+networks:
+  code_shock_net:
+    driver: bridge

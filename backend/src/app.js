@@ -1,0 +1,34 @@
+import express from 'express';
+import cors from 'cors';
+import { adminLogin, createContest, addChallenge, startContestGlobal } from './controllers/adminController.js';
+import {
+  registerTeam,
+  loginTeamWithAccessCode,
+  joinContest,
+  getContestChallenges,
+  submitChallenge,
+  completeContest
+} from './controllers/teamContestController.js';
+import { getContestLeaderboard } from './controllers/leaderBoardController.js';
+import { verifyAdmin, verifyTeam } from './middleware/authMiddleware.js';
+
+const app = express();
+app.use(cors());
+app.use(express.json());
+app.post('/api/admin/login', adminLogin);
+app.post('/api/admin/contests', verifyAdmin, createContest);
+app.post('/api/admin/contests/:contest_id/challenges', verifyAdmin, addChallenge);
+app.patch('/api/admin/contests/:contest_id/start', verifyAdmin, startContestGlobal);
+
+// Team Routes
+app.post('/api/team/register', registerTeam);
+app.post('/api/team/login', loginTeamWithAccessCode);
+app.post('/api/team/join', verifyTeam, joinContest);
+app.get('/api/team/challenges', verifyTeam, getContestChallenges);
+app.post('/api/team/submit', verifyTeam, submitChallenge);
+app.post('/api/team/complete', verifyTeam, completeContest);
+
+// Public Leaderboard
+app.get('/api/contests/:contest_id/leaderboard', getContestLeaderboard);
+
+export default app;

@@ -1,0 +1,36 @@
+services:
+  # =========================================================================
+  # 1. NODE.JS SANDBOX RUNNER (Internal Compiler & Execution Microservice)
+  # =========================================================================
+  - type: web
+    name: code-shock-judge
+    region: singapore
+    runtime: docker
+    dockerfilePath: ./runner/Dockerfile
+    dockerContext: ./runner
+    plan: starter # Starter plan (1 CPU / 1GB RAM) recommended for gcc & javac compilation
+    envVars:
+      - key: PORT
+        value: 8000
+
+  # =========================================================================
+  # 2. EXPRESS API GATEWAY (Public REST API & Contest Management)
+  # =========================================================================
+  - type: web
+    name: code-shock-api
+    region: singapore
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: ./backend
+    plan: starter # Or 'free' for initial testing
+    envVars:
+      - key: PORT
+        value: 5000
+      - key: DATABASE_URL
+        value: "postgresql://neondb_owner:npg_Sjrg9Kpl6YxO@ep-bold-hat-b3t33yxj-pooler.c-4.ap-southeast-1.aws.neon.tech/neondb?sslmode=require&channel_binding=require"
+      - key: REDIS_URL
+        value: "redis://default:gQAAAAAAA16HAAIgcDIwYzcwZjg1M2IyNzA0ZjRmOTU1NDE5NWE2MTA4NzAyYQ@fitting-salmon-220807.upstash.io:6379"
+      - key: RUNNER_URL
+        value: "http://code-shock-judge:8000/run" # Private zero-latency internal network routing
+      - key: JWT_SECRET
+        generateValue: true
