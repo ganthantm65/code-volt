@@ -1,4 +1,4 @@
-const RUNNER_URL = process.env.RUNNER_URL || 'http://localhost:8000/run';
+const RUNNER_URL = process.env.RUNNER_URL || 'https://code-volt.onrender.com/run';
 
 async function executeViaDockerRunner(language, sourceCode, testCases) {
   try {
