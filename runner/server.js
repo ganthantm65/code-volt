@@ -64,7 +64,8 @@ function execCommand(cmd, cwd) {
 }
 
 app.post('/run', async (req, res) => {
-  const { language = 'python', source_code = '', test_cases = [] } = req.body;
+  const { language = 'python', source_code, code, test_cases = [] } = req.body;
+  const programCode = source_code || code || '';
   const lang = language.toLowerCase();
 
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'judge_'));
@@ -78,12 +79,13 @@ app.post('/run', async (req, res) => {
   try {
     if (lang === 'python') {
       const srcFile = path.join(tempDir, 'solution.py');
-      fs.writeFileSync(srcFile, source_code);
+      fs.writeFileSync(srcFile, programCode);
 
       for (let i = 0; i < test_cases.length; i++) {
         const tc = test_cases[i];
-        const run = await runProcess('python3', [srcFile], tc.input, tempDir);
-        const expected = String(tc.expected_output || '').trim();
+        // '-u' forces unbuffered stdout so output is immediately sent to pipe
+        const run = await runProcess('python3', ['-u', srcFile], tc.input, tempDir);
+        const expected = String(tc.expected_output ?? '').trim();
         const passed = run.success && run.stdout === expected;
 
         if (passed) results.passed_count++;
@@ -97,12 +99,10 @@ app.post('/run', async (req, res) => {
           error: run.error
         });
       }
-    }
-
-    else if (lang === 'cpp' || lang === 'c++') {
+    } else if (lang === 'cpp' || lang === 'c++') {
       const srcFile = path.join(tempDir, 'solution.cpp');
       const binFile = path.join(tempDir, 'solution.out');
-      fs.writeFileSync(srcFile, source_code);
+      fs.writeFileSync(srcFile, programCode);
 
       const compile = await execCommand(`g++ -O2 "${srcFile}" -o "${binFile}"`, tempDir);
       if (!compile.success) {
@@ -117,7 +117,7 @@ app.post('/run', async (req, res) => {
       for (let i = 0; i < test_cases.length; i++) {
         const tc = test_cases[i];
         const run = await runProcess(binFile, [], tc.input, tempDir);
-        const expected = String(tc.expected_output || '').trim();
+        const expected = String(tc.expected_output ?? '').trim();
         const passed = run.success && run.stdout === expected;
 
         if (passed) results.passed_count++;
@@ -131,11 +131,9 @@ app.post('/run', async (req, res) => {
           error: run.error
         });
       }
-    }
-
-    else if (lang === 'java') {
+    } else if (lang === 'java') {
       const srcFile = path.join(tempDir, 'Solution.java');
-      fs.writeFileSync(srcFile, source_code);
+      fs.writeFileSync(srcFile, programCode);
 
       const compile = await execCommand(`javac "${srcFile}"`, tempDir);
       if (!compile.success) {
@@ -150,7 +148,7 @@ app.post('/run', async (req, res) => {
       for (let i = 0; i < test_cases.length; i++) {
         const tc = test_cases[i];
         const run = await runProcess('java', ['-Xmx128m', 'Solution'], tc.input, tempDir);
-        const expected = String(tc.expected_output || '').trim();
+        const expected = String(tc.expected_output ?? '').trim();
         const passed = run.success && run.stdout === expected;
 
         if (passed) results.passed_count++;
@@ -179,7 +177,7 @@ app.post('/run', async (req, res) => {
   res.json(results);
 });
 
-const PORT = 8000;
-app.listen(PORT, () => {
+const PORT = process.env.PORT || 8000;
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`Node.js Sandbox Runner active on port ${PORT}`);
 });
