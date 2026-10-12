@@ -1,28 +1,32 @@
 import { pool } from '../config/db.js';
+import { redis } from '../config/redis.js';
 
 export async function getContestLeaderboard(req, res) {
-  const contest_id = req.params.contest_id || 1;
-
   try {
-    const query = `
-      SELECT 
-        t.id AS team_id,
-        t.team_name,
-        t.college,
-        t.is_finished,
-        ts.total_score,
-        ts.solved_count,
-        ROUND(EXTRACT(EPOCH FROM (ts.last_submission_time - t.start_time))) AS duration_seconds,
-        ts.last_submission_time
-      FROM team_scores ts
-      JOIN teams t ON t.id = ts.team_id
-      WHERE ts.contest_id = $1 AND t.is_disqualified = FALSE
-      ORDER BY ts.total_score DESC, ts.solved_count DESC, duration_seconds ASC, ts.last_submission_time ASC
-      LIMIT 100;
-    `;
-    const result = await pool.query(query, [contest_id]);
-    res.json(result.rows);
+    const contestId = req.params.contest_id || req.query.contest_id || 1;
+
+    // Fetch ranked teams with their scores
+    const result = await pool.query(
+      `SELECT 
+         t.id AS team_id,
+         t.team_name,
+         t.college,
+         COALESCE(ts.total_score, 0) AS total_points,
+         COALESCE(ts.total_score, 0) AS total_score,
+         ts.last_submission_time
+       FROM teams t
+       LEFT JOIN team_scores ts ON ts.team_id = t.id AND ts.contest_id = $1
+       WHERE t.contest_id = $1 OR ts.contest_id = $1 OR t.contest_id IS NULL
+       ORDER BY total_points DESC, ts.last_submission_time ASC NULLS LAST, t.id ASC`,
+      [contestId]
+    );
+
+    res.json({
+      contest_id: Number(contestId),
+      leaderboard: result.rows
+    });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to retrieve contest standings' });
+    console.error('Leaderboard query error:', err);
+    res.status(500).json({ error: err.message });
   }
 }
