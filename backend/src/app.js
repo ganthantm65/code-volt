@@ -22,8 +22,6 @@ import { getActiveContests } from './controllers/teamContestController.js';
 
 import { 
   getAdminContests, 
-  createContest, 
-  startContestGlobal 
 } from './controllers/adminController.js';
 
 const app = express();
