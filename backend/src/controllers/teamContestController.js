@@ -270,3 +270,36 @@ export async function getActiveContests(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export async function getSingleChallenge(req, res) {
+  const teamId = req.user.id;
+  const { id } = req.params;
+
+  try {
+    // 1. Get the team's current contest
+    const teamRes = await pool.query('SELECT contest_id FROM teams WHERE id = $1', [teamId]);
+    const contestId = teamRes.rows[0]?.contest_id;
+
+    if (!contestId) {
+      return res.status(400).json({ error: 'Please join a contest first' });
+    }
+
+    // 2. Fetch the specific challenge ensuring it belongs to this contest
+    const result = await pool.query(
+      `SELECT id, contest_id, challenge_number, title, description, challenge_type, 
+              max_points, penalty_per_resubmit, supported_languages, content_payload 
+       FROM challenges 
+       WHERE id = $1 AND contest_id = $2`,
+      [id, contestId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Challenge not found' });
+    }
+
+    // Return the challenge object
+    res.json(result.rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}

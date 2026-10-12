@@ -22,6 +22,13 @@ import { verifyAdmin, verifyTeam } from './middleware/authMiddleware.js';
 import { getActiveContests } from './controllers/teamContestController.js';
 
 import { 
+  getSingleChallenge,
+  // ... other imports
+} from './controllers/teamContestController.js';
+
+// Add this route right next to /api/team/challenges:
+
+import { 
   getAdminContests, 
 } from './controllers/adminController.js';
 
@@ -58,5 +65,7 @@ app.post('/api/admin/contests', verifyAdmin, createContest);
 app.patch('/api/admin/contests/:contest_id/start', verifyAdmin, startContestGlobal);
 
 app.get('/api/admin/contests/:contest_id/challenges', verifyAdmin, getAdminContestChallenges);
+
+app.get('/api/team/challenges/:id', verifyTeam, getSingleChallenge);
 
 export default app;
