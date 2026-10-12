@@ -17,6 +17,7 @@ import {
   completeContest
 } from './controllers/teamContestController.js';
 import { getContestLeaderboard } from './controllers/leaderBoardController.js';
+import { getAdminContestChallenges } from './controllers/adminController.js';
 import { verifyAdmin, verifyTeam } from './middleware/authMiddleware.js';
 import { getActiveContests } from './controllers/teamContestController.js';
 
@@ -55,5 +56,7 @@ app.get('/api/contests/:contest_id/leaderboard', getContestLeaderboard);
 app.get('/api/admin/contests', verifyAdmin, getAdminContests);
 app.post('/api/admin/contests', verifyAdmin, createContest);
 app.patch('/api/admin/contests/:contest_id/start', verifyAdmin, startContestGlobal);
+
+app.get('/api/admin/contests/:contest_id/challenges', verifyAdmin, getAdminContestChallenges);
 
 export default app;

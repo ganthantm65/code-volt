@@ -175,3 +175,21 @@ export async function getAdminContests(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export async function getAdminContestChallenges(req, res) {
+  const { contest_id } = req.params;
+
+  try {
+    const result = await pool.query(
+      `SELECT id, challenge_number, title, description, challenge_type, max_points, penalty_per_resubmit, supported_languages, content_payload 
+       FROM challenges 
+       WHERE contest_id = $1 
+       ORDER BY challenge_number ASC`,
+      [contest_id]
+    );
+
+    res.json({ challenges: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
