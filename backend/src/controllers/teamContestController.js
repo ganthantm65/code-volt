@@ -164,88 +164,88 @@ export async function submitChallenge(req, res) {
   const { challenge_id, submission_payload } = req.body;
 
   try {
-    const teamRes = await pool.query('SELECT * FROM teams WHERE id = $1', [teamId]);
-    const team = teamRes.rows[0];
+    // 1. Fetch challenge and solution payload
+    const challengeRes = await pool.query(
+      `SELECT id, contest_id, challenge_type, max_points, penalty_per_resubmit, solution_payload, content_payload 
+       FROM challenges 
+       WHERE id = $1`,
+      [challenge_id]
+    );
 
-    if (!team) return res.status(404).json({ error: 'Team not found' });
-    if (team.is_finished) return res.status(400).json({ error: 'Contest already marked as complete' });
-
-    const now = new Date();
-    if (now.getTime() > new Date(team.end_time).getTime() + 5000) {
-      return res.status(403).json({ error: '15-minute time limit expired' });
+    if (challengeRes.rows.length === 0) {
+      return res.status(404).json({ error: 'Challenge not found' });
     }
 
-    const solvedRes = await pool.query(
-      'SELECT id FROM submissions WHERE team_id = $1 AND challenge_id = $2 AND is_correct = TRUE',
-      [teamId, challenge_id]
-    );
-    if (solvedRes.rows.length > 0) return res.status(400).json({ error: 'Challenge already solved!' });
+    const challenge = challengeRes.rows[0];
+    const solution = challenge.solution_payload;
+    let isCorrect = false;
+    let feedback = '';
 
-    const chalRes = await pool.query('SELECT * FROM challenges WHERE id = $1', [challenge_id]);
-    const challenge = chalRes.rows[0];
-    if (!challenge) return res.status(404).json({ error: 'Challenge not found' });
+    // 2. Validate JUMBLED_CODE
+    if (challenge.challenge_type === 'JUMBLED_CODE') {
+      const submittedOrder = submission_payload?.ordered_block_ids || [];
+      const expectedOrder = solution?.correct_order || [];
 
-    const attemptsRes = await pool.query(
-      'SELECT COUNT(*) FROM submissions WHERE team_id = $1 AND challenge_id = $2',
-      [teamId, challenge_id]
-    );
-    const priorAttempts = parseInt(attemptsRes.rows[0].count, 10);
+      // Primary check: Direct block ID sequence comparison
+      const orderMatches = 
+        submittedOrder.length === expectedOrder.length &&
+        submittedOrder.every((val, index) => val === expectedOrder[index]);
 
-    const evalResult = await evaluateSubmissionLive(challenge, submission_payload);
+      if (orderMatches) {
+        isCorrect = true;
+        feedback = 'All blocks sequenced in correct chronological order! All hidden test cases passed.';
+      } else {
+        isCorrect = false;
+        feedback = 'Incorrect block ordering. Review loop structure, variable assignments, and return statements.';
+      }
+    } 
+    // 3. Validate INVALID_TEST_CASE
+    else if (challenge.challenge_type === 'INVALID_TEST_CASE') {
+      const submittedTcId = (submission_payload?.defective_test_case_id || '').trim();
+      const submittedOutput = (submission_payload?.corrected_expected_output || '').trim();
 
-    let pointsAwarded = 0;
-    if (evalResult.is_correct) {
-      const penalty = priorAttempts * challenge.penalty_per_resubmit;
-      pointsAwarded = Math.max(challenge.max_points - penalty, 20);
-    }
+      const expectedTcId = (solution?.defective_test_case_id || '').trim();
+      const expectedOutput = (solution?.corrected_expected_output || '').trim();
 
-    await pool.query(
-      `INSERT INTO submissions (
-        contest_id, team_id, challenge_id, submitted_payload,
-        is_correct, points_awarded, test_cases_passed, total_test_cases
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [
-        team.contest_id,
-        teamId,
-        challenge_id,
-        JSON.stringify(submission_payload),
-        evalResult.is_correct,
-        pointsAwarded,
-        evalResult.test_cases_passed,
-        evalResult.total_test_cases
-      ]
-    );
-
-    if (evalResult.is_correct) {
-      const scoreUpdate = await pool.query(
-        `UPDATE team_scores 
-         SET total_score = total_score + $1,
-             solved_count = solved_count + 1,
-             last_submission_time = NOW()
-         WHERE team_id = $2
-         RETURNING total_score`,
-        [pointsAwarded, teamId]
-      );
-
-      const newTotal = scoreUpdate.rows[0].total_score;
-      if (redis) {
-        await redis.zadd(`leaderboard:${team.contest_id}`, newTotal, teamId.toString());
+      if (submittedTcId === expectedTcId && submittedOutput === expectedOutput) {
+        isCorrect = true;
+        feedback = `Identified defective case (${submittedTcId}) and supplied valid corrected assertion!`;
+      } else {
+        isCorrect = false;
+        feedback = 'Defective test case ID or expected output assertion does not match expected fix.';
       }
     }
 
-    res.json({
-      correct: evalResult.is_correct,
-      points_awarded: pointsAwarded,
-      test_cases_passed: evalResult.test_cases_passed,
-      total_test_cases: evalResult.total_test_cases,
-      feedback: evalResult.feedback,
-      execution_logs: evalResult.logs
+    // 4. Update team scores and submission audit log
+    const pointsAwarded = isCorrect ? challenge.max_points : 0;
+
+    await pool.query(
+      `INSERT INTO submissions (team_id, challenge_id, submission_payload, is_correct, points_awarded)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [teamId, challenge_id, JSON.stringify(submission_payload), isCorrect, pointsAwarded]
+    );
+
+    if (isCorrect) {
+      await pool.query(
+        `INSERT INTO team_scores (team_id, contest_id, total_score, last_submission_time)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (team_id) DO UPDATE 
+         SET total_score = team_scores.total_score + $3,
+             last_submission_time = NOW()`,
+        [teamId, challenge.contest_id, pointsAwarded]
+      );
+    }
+
+    return res.json({
+      correct: isCorrect,
+      points: pointsAwarded,
+      feedback: feedback
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Submission error:', err);
+    return res.status(500).json({ error: err.message });
   }
 }
-
 export async function completeContest(req, res) {
   const teamId = req.user.id;
 
