@@ -1,7 +1,6 @@
 import jwt from 'jsonwebtoken';
 import { pool } from '../config/db.js';
 import { redis } from '../config/redis.js';
-import { evaluateSubmissionLive } from '../services/validatorService.js';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'super_secure_code_shock_jwt_key_2026';
 
@@ -17,7 +16,7 @@ export async function registerTeam(req, res) {
       `INSERT INTO teams (team_name, member_one_name, member_two_name, college, year)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING id, team_name, college`,
-      [team_name, member_one_name, member_two_name, college, year || null]
+      [team_name.trim(), member_one_name.trim(), member_two_name.trim(), college.trim(), year || null]
     );
 
     res.status(201).json({ message: 'Team registered successfully', team: result.rows[0] });
@@ -57,7 +56,7 @@ export async function loginTeamWithAccessCode(req, res) {
     if (!team) return res.status(404).json({ error: 'Team is not registered' });
     if (team.is_disqualified) return res.status(403).json({ error: 'Team is disqualified' });
 
-    // 3. Auto-join contest: initialize start_time, end_time, and contest_id if not present
+    // 3. Auto-join contest: initialize start_time, end_time, and contest_id
     const duration = contest.duration_minutes || 15;
     const updateTeam = await pool.query(
       `UPDATE teams 
@@ -139,7 +138,12 @@ export async function getContestChallenges(req, res) {
 
   try {
     const teamRes = await pool.query('SELECT contest_id FROM teams WHERE id = $1', [teamId]);
-    const contestId = teamRes.rows[0]?.contest_id;
+    let contestId = teamRes.rows[0]?.contest_id;
+
+    if (!contestId) {
+      const activeContestRes = await pool.query('SELECT id FROM contests WHERE is_active = TRUE LIMIT 1');
+      contestId = activeContestRes.rows[0]?.id;
+    }
 
     if (!contestId) return res.status(400).json({ error: 'Please join a contest first' });
 
@@ -183,11 +187,15 @@ export async function submitChallenge(req, res) {
 
     // 2. Validate JUMBLED_CODE
     if (challenge.challenge_type === 'JUMBLED_CODE') {
-      const submittedOrder = submission_payload?.ordered_block_ids || [];
-      const expectedOrder = solution?.correct_order || [];
+      const submittedOrder = Array.isArray(submission_payload?.ordered_block_ids)
+        ? submission_payload.ordered_block_ids.map(id => String(id).trim())
+        : [];
+      const expectedOrder = Array.isArray(solution?.correct_order)
+        ? solution.correct_order.map(id => String(id).trim())
+        : [];
 
-      // Primary check: Direct block ID sequence comparison
-      const orderMatches = 
+      const orderMatches =
+        submittedOrder.length > 0 &&
         submittedOrder.length === expectedOrder.length &&
         submittedOrder.every((val, index) => val === expectedOrder[index]);
 
@@ -201,11 +209,11 @@ export async function submitChallenge(req, res) {
     } 
     // 3. Validate INVALID_TEST_CASE
     else if (challenge.challenge_type === 'INVALID_TEST_CASE') {
-      const submittedTcId = (submission_payload?.defective_test_case_id || '').trim();
-      const submittedOutput = (submission_payload?.corrected_expected_output || '').trim();
+      const submittedTcId = String(submission_payload?.defective_test_case_id || '').trim();
+      const submittedOutput = String(submission_payload?.corrected_expected_output || '').trim();
 
-      const expectedTcId = (solution?.defective_test_case_id || '').trim();
-      const expectedOutput = (solution?.corrected_expected_output || '').trim();
+      const expectedTcId = String(solution?.defective_test_case_id || '').trim();
+      const expectedOutput = String(solution?.corrected_expected_output || '').trim();
 
       if (submittedTcId === expectedTcId && submittedOutput === expectedOutput) {
         isCorrect = true;
@@ -216,24 +224,36 @@ export async function submitChallenge(req, res) {
       }
     }
 
-    // 4. Update team scores and submission audit log
     const pointsAwarded = isCorrect ? challenge.max_points : 0;
 
+    // 4. Record submission
     await pool.query(
       `INSERT INTO submissions (team_id, challenge_id, submission_payload, is_correct, points_awarded)
        VALUES ($1, $2, $3, $4, $5)`,
       [teamId, challenge_id, JSON.stringify(submission_payload), isCorrect, pointsAwarded]
     );
 
+    // 5. Update score in DB and Redis
     if (isCorrect) {
-      await pool.query(
+      const scoreUpdateRes = await pool.query(
         `INSERT INTO team_scores (team_id, contest_id, total_score, last_submission_time)
          VALUES ($1, $2, $3, NOW())
          ON CONFLICT (team_id) DO UPDATE 
          SET total_score = team_scores.total_score + $3,
-             last_submission_time = NOW()`,
+             last_submission_time = NOW()
+         RETURNING total_score`,
         [teamId, challenge.contest_id, pointsAwarded]
       );
+
+      const newTotal = scoreUpdateRes.rows[0]?.total_score || pointsAwarded;
+
+      try {
+        if (redis) {
+          await redis.zadd(`leaderboard:${challenge.contest_id}`, newTotal, String(teamId));
+        }
+      } catch (redisErr) {
+        console.error('Redis leaderboard update error:', redisErr.message);
+      }
     }
 
     return res.json({
@@ -246,6 +266,7 @@ export async function submitChallenge(req, res) {
     return res.status(500).json({ error: err.message });
   }
 }
+
 export async function completeContest(req, res) {
   const teamId = req.user.id;
 
@@ -276,28 +297,32 @@ export async function getSingleChallenge(req, res) {
   const { id } = req.params;
 
   try {
-    // 1. Get the team's current contest
     const teamRes = await pool.query('SELECT contest_id FROM teams WHERE id = $1', [teamId]);
-    const contestId = teamRes.rows[0]?.contest_id;
+    let contestId = teamRes.rows[0]?.contest_id;
+
+    if (!contestId) {
+      const activeContestRes = await pool.query('SELECT id FROM contests WHERE is_active = TRUE LIMIT 1');
+      contestId = activeContestRes.rows[0]?.id;
+    }
 
     if (!contestId) {
       return res.status(400).json({ error: 'Please join a contest first' });
     }
 
-    // 2. Fetch the specific challenge ensuring it belongs to this contest
+    const isNumeric = !isNaN(Number(id));
     const result = await pool.query(
       `SELECT id, contest_id, challenge_number, title, description, challenge_type, 
               max_points, penalty_per_resubmit, supported_languages, content_payload 
        FROM challenges 
-       WHERE id = $1 AND contest_id = $2`,
-      [id, contestId]
+       WHERE (id = $1 ${isNumeric ? 'OR challenge_number = $1' : ''}) AND contest_id = $2
+       LIMIT 1`,
+      isNumeric ? [Number(id), contestId] : [id, contestId]
     );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Challenge not found' });
     }
 
-    // Return the challenge object
     res.json(result.rows[0]);
   } catch (err) {
     res.status(500).json({ error: err.message });
