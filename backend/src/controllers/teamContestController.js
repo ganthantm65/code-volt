@@ -27,26 +27,60 @@ export async function registerTeam(req, res) {
 }
 
 export async function loginTeamWithAccessCode(req, res) {
-  const { team_name, access_code } = req.body;
+  const { team_name, access_code, passcode } = req.body;
+  const rawCode = access_code || passcode;
+
+  if (!team_name || !rawCode) {
+    return res.status(400).json({ error: 'Both team name and contest access code are required' });
+  }
 
   try {
+    const normalizedCode = String(rawCode).trim().toUpperCase();
+
+    // 1. Verify contest access code
     const contestRes = await pool.query(
-      'SELECT * FROM contests WHERE access_code = $1',
-      [access_code.toUpperCase()]
+      'SELECT * FROM contests WHERE UPPER(TRIM(access_code)) = $1',
+      [normalizedCode]
     );
     const contest = contestRes.rows[0];
 
     if (!contest) return res.status(404).json({ error: 'Invalid Contest Access Code' });
     if (!contest.is_active) return res.status(403).json({ error: 'Contest is not active yet' });
 
-    const teamRes = await pool.query('SELECT * FROM teams WHERE team_name = $1', [team_name]);
+    // 2. Verify registered team
+    const teamRes = await pool.query(
+      'SELECT * FROM teams WHERE LOWER(TRIM(team_name)) = LOWER(TRIM($1))',
+      [team_name]
+    );
     const team = teamRes.rows[0];
 
     if (!team) return res.status(404).json({ error: 'Team is not registered' });
     if (team.is_disqualified) return res.status(403).json({ error: 'Team is disqualified' });
 
+    // 3. Auto-join contest: initialize start_time, end_time, and contest_id if not present
+    const duration = contest.duration_minutes || 15;
+    const updateTeam = await pool.query(
+      `UPDATE teams 
+       SET contest_id = $1, 
+           joined_at = COALESCE(joined_at, NOW()), 
+           start_time = COALESCE(start_time, NOW()), 
+           end_time = COALESCE(end_time, NOW() + ($2 || ' minutes')::INTERVAL)
+       WHERE id = $3
+       RETURNING id, team_name, college, contest_id, start_time, end_time, is_finished`,
+      [contest.id, duration, team.id]
+    );
+
+    await pool.query(
+      `INSERT INTO team_scores (team_id, contest_id) VALUES ($1, $2)
+       ON CONFLICT (team_id) DO UPDATE SET contest_id = EXCLUDED.contest_id`,
+      [team.id, contest.id]
+    );
+
+    const activeTeam = updateTeam.rows[0];
+
+    // 4. Issue JWT
     const token = jwt.sign(
-      { id: team.id, team_name: team.team_name, role: 'team' },
+      { id: activeTeam.id, team_name: activeTeam.team_name, role: 'team' },
       JWT_SECRET,
       { expiresIn: '3h' }
     );
@@ -54,7 +88,7 @@ export async function loginTeamWithAccessCode(req, res) {
     res.json({
       token,
       contest_id: contest.id,
-      team: { id: team.id, team_name: team.team_name, contest_id: contest.id }
+      team: activeTeam
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -117,7 +151,9 @@ export async function getContestChallenges(req, res) {
       [contestId]
     );
 
-    res.json(result.rows);
+    res.json({
+      challenges: result.rows
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -155,7 +191,6 @@ export async function submitChallenge(req, res) {
     );
     const priorAttempts = parseInt(attemptsRes.rows[0].count, 10);
 
-    // Run real execution inside Docker Sandbox
     const evalResult = await evaluateSubmissionLive(challenge, submission_payload);
 
     let pointsAwarded = 0;
@@ -193,7 +228,9 @@ export async function submitChallenge(req, res) {
       );
 
       const newTotal = scoreUpdate.rows[0].total_score;
-      await redis.zadd(`leaderboard:${team.contest_id}`, newTotal, teamId.toString());
+      if (redis) {
+        await redis.zadd(`leaderboard:${team.contest_id}`, newTotal, teamId.toString());
+      }
     }
 
     res.json({
@@ -215,6 +252,20 @@ export async function completeContest(req, res) {
   try {
     await pool.query('UPDATE teams SET is_finished = TRUE WHERE id = $1', [teamId]);
     res.json({ message: 'Contest finalized! Great job. Check final leaderboard standings.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+export async function getActiveContests(req, res) {
+  try {
+    const result = await pool.query(
+      `SELECT id, title, description, duration_minutes, is_active, created_at
+       FROM contests
+       WHERE is_active = TRUE
+       ORDER BY id ASC`
+    );
+    res.json({ contests: result.rows });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

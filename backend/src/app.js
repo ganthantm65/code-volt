@@ -18,6 +18,13 @@ import {
 } from './controllers/teamContestController.js';
 import { getContestLeaderboard } from './controllers/leaderBoardController.js';
 import { verifyAdmin, verifyTeam } from './middleware/authMiddleware.js';
+import { getActiveContests } from './controllers/teamContestController.js';
+
+import { 
+  getAdminContests, 
+  createContest, 
+  startContestGlobal 
+} from './controllers/adminController.js';
 
 const app = express();
 app.use(cors());
@@ -40,8 +47,15 @@ app.post('/api/team/join', verifyTeam, joinContest);
 app.get('/api/team/challenges', verifyTeam, getContestChallenges);
 app.post('/api/team/submit', verifyTeam, submitChallenge);
 app.post('/api/team/complete', verifyTeam, completeContest);
+app.get('/api/team/contests', verifyTeam, getActiveContests);
 
 // Public Leaderboard
 app.get('/api/contests/:contest_id/leaderboard', getContestLeaderboard);
+
+
+// Admin contest routes
+app.get('/api/admin/contests', verifyAdmin, getAdminContests);
+app.post('/api/admin/contests', verifyAdmin, createContest);
+app.patch('/api/admin/contests/:contest_id/start', verifyAdmin, startContestGlobal);
 
 export default app;

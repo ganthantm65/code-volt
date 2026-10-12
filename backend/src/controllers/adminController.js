@@ -152,3 +152,26 @@ export async function resetTeamTimer(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export async function getAdminContests(req, res) {
+  try {
+    const result = await pool.query(
+      `SELECT 
+         c.id, 
+         c.title, 
+         c.description, 
+         c.access_code, 
+         c.duration_minutes, 
+         c.is_active, 
+         c.created_at,
+         COUNT(ch.id) AS challenge_count
+       FROM contests c
+       LEFT JOIN challenges ch ON ch.contest_id = c.id
+       GROUP BY c.id
+       ORDER BY c.id ASC`
+    );
+    res.json({ contests: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
