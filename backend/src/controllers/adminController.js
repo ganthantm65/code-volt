@@ -104,3 +104,51 @@ export async function startContestGlobal(req, res) {
     res.status(500).json({ error: err.message });
   }
 }
+
+export async function getAdminTeams(req, res) {
+  try {
+    const result = await pool.query(
+      `SELECT 
+         id, 
+         team_name, 
+         college, 
+         start_time, 
+         end_time, 
+         is_finished, 
+         is_disqualified 
+       FROM teams 
+       ORDER BY id ASC`
+    );
+    res.json({ teams: result.rows });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+export async function resetTeamTimer(req, res) {
+  const { team_id } = req.params;
+  try {
+    // Extends or resets the timer to NOW() + 15 minutes
+    const result = await pool.query(
+      `UPDATE teams 
+       SET start_time = NOW(),
+           end_time = NOW() + INTERVAL '15 minutes',
+           is_disqualified = false,
+           is_finished = false
+       WHERE id = $1
+       RETURNING id, team_name, start_time, end_time`,
+      [team_id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(404).json({ error: `Team with ID ${team_id} not found.` });
+    }
+
+    res.json({ 
+      message: `Timer reset for team ID ${team_id}`, 
+      team: result.rows[0] 
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+}

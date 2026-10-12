@@ -1,7 +1,7 @@
 import { pool } from '../config/db.js';
 
 export async function getContestLeaderboard(req, res) {
-  const { contest_id } = req.params;
+  const contest_id = req.params.contest_id || 1;
 
   try {
     const query = `
