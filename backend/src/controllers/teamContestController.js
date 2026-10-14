@@ -182,10 +182,28 @@ export async function submitChallenge(req, res) {
 
     const challenge = challengeRes.rows[0];
     const solution = challenge.solution_payload;
+    const penaltyPerSubmit = Number(challenge.penalty_per_resubmit) || 5;
+
+    // 2. Prevent duplicate credit if already solved
+    const alreadySolvedRes = await pool.query(
+      `SELECT id FROM submissions 
+       WHERE team_id = $1 AND challenge_id = $2 AND is_correct = TRUE 
+       LIMIT 1`,
+      [teamId, challenge_id]
+    );
+
+    if (alreadySolvedRes.rows.length > 0) {
+      return res.json({
+        correct: true,
+        points: 0,
+        feedback: 'You have already solved this challenge previously! Score is recorded.'
+      });
+    }
+
     let isCorrect = false;
     let feedback = '';
 
-    // 2. Validate JUMBLED_CODE
+    // 3. Validate JUMBLED_CODE
     if (challenge.challenge_type === 'JUMBLED_CODE') {
       const submittedOrder = Array.isArray(submission_payload?.ordered_block_ids)
         ? submission_payload.ordered_block_ids.map(id => String(id).trim())
@@ -201,13 +219,13 @@ export async function submitChallenge(req, res) {
 
       if (orderMatches) {
         isCorrect = true;
-        feedback = 'All blocks sequenced in correct chronological order! All hidden test cases passed.';
+        feedback = 'All blocks sequenced in correct chronological order! Logic verification passed.';
       } else {
         isCorrect = false;
         feedback = 'Incorrect block ordering. Review loop structure, variable assignments, and return statements.';
       }
     } 
-    // 3. Validate INVALID_TEST_CASE
+    // 4. Validate INVALID_TEST_CASE
     else if (challenge.challenge_type === 'INVALID_TEST_CASE') {
       const submittedTcId = String(submission_payload?.defective_test_case_id || '').trim();
       const submittedOutput = String(submission_payload?.corrected_expected_output || '').trim();
@@ -224,42 +242,61 @@ export async function submitChallenge(req, res) {
       }
     }
 
-    const pointsAwarded = isCorrect ? challenge.max_points : 0;
+    // 5. Calculate Points with Negative Marking
+    let pointsAwarded = 0;
 
-    // 4. Record submission
+    if (isCorrect) {
+      // Find prior wrong submissions to deduct penalties
+      const priorFailsRes = await pool.query(
+        `SELECT COUNT(*) FROM submissions 
+         WHERE team_id = $1 AND challenge_id = $2 AND is_correct = FALSE`,
+        [teamId, challenge_id]
+      );
+      const priorFails = parseInt(priorFailsRes.rows[0].count, 10);
+      
+      // Points awarded = max_points minus accumulated attempts penalty, floored at 0
+      pointsAwarded = Math.max(0, challenge.max_points - (priorFails * penaltyPerSubmit));
+    } else {
+      // Direct deduction for the incorrect submission
+      pointsAwarded = -penaltyPerSubmit;
+    }
+
+    // 6. Record the submission attempt
     await pool.query(
       `INSERT INTO submissions (team_id, challenge_id, submission_payload, is_correct, points_awarded)
        VALUES ($1, $2, $3, $4, $5)`,
       [teamId, challenge_id, JSON.stringify(submission_payload), isCorrect, pointsAwarded]
     );
 
-    // 5. Update score in DB and Redis
-    if (isCorrect) {
-      const scoreUpdateRes = await pool.query(
-        `INSERT INTO team_scores (team_id, contest_id, total_score, last_submission_time)
-         VALUES ($1, $2, $3, NOW())
-         ON CONFLICT (team_id) DO UPDATE 
-         SET total_score = team_scores.total_score + $3,
-             last_submission_time = NOW()
-         RETURNING total_score`,
-        [teamId, challenge.contest_id, pointsAwarded]
-      );
+    // 7. Update running score in PostgreSQL (floored at zero using GREATEST)
+    const scoreUpdateRes = await pool.query(
+      `INSERT INTO team_scores (team_id, contest_id, total_score, last_submission_time)
+       VALUES ($1, $2, GREATEST(0, $3), NOW())
+       ON CONFLICT (team_id) DO UPDATE 
+       SET total_score = GREATEST(0, team_scores.total_score + $3),
+           last_submission_time = NOW()
+       RETURNING total_score`,
+      [teamId, challenge.contest_id, pointsAwarded]
+    );
 
-      const newTotal = scoreUpdateRes.rows[0]?.total_score || pointsAwarded;
+    const newTotal = scoreUpdateRes.rows[0]?.total_score ?? 0;
 
-      try {
-        if (redis) {
-          await redis.zadd(`leaderboard:${challenge.contest_id}`, newTotal, String(teamId));
-        }
-      } catch (redisErr) {
-        console.error('Redis leaderboard update error:', redisErr.message);
+    // 8. Sync live score to Redis Sorted Set
+    try {
+      if (redis) {
+        await redis.zadd(`leaderboard:${challenge.contest_id}`, newTotal, String(teamId));
       }
+    } catch (redisErr) {
+      console.error('Redis leaderboard update error:', redisErr.message);
     }
 
     return res.json({
       correct: isCorrect,
       points: pointsAwarded,
-      feedback: feedback
+      total_score: newTotal,
+      feedback: isCorrect
+        ? `${feedback} (+${pointsAwarded} pts)`
+        : `${feedback} (-${penaltyPerSubmit} pts penalty)`
     });
   } catch (err) {
     console.error('Submission error:', err);
